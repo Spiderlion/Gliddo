@@ -1,98 +1,130 @@
-from typing import Dict, List, Any, Optional
-from datetime import datetime, timezone
-import logging
-from supabase import Client, create_client
-from dotenv import load_dotenv
+import psycopg2
 import os
+from datetime import datetime
+from dotenv import load_dotenv
+import logging
 
-logging.basicConfig(level=logging.INFO)
+# Load environment variables
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 class EnhancedDataManager:
     def __init__(self):
-        load_dotenv()
-        self.client: Client = create_client(
-            os.getenv("SUPABASE_URL"),
-            os.getenv("SUPABASE_KEY")
+        """
+        Initialize the database connection
+        """
+        self.conn = psycopg2.connect(
+            dbname=os.getenv("DB_NAME", "postgres"),
+            user=os.getenv("DB_USER", "postgres"),
+            password=os.getenv("DB_PASSWORD"),
+            host=os.getenv("DB_HOST"),
+            port=os.getenv("DB_PORT", "5432")  # Default to PostgreSQL port
         )
+        self.cursor = self.conn.cursor()
 
-    async def store_task_analysis(self, 
-                                employee_id: str, 
-                                analysis_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Store AI agent's task analysis results"""
-        try:
-            data = {
-                "employee_id": employee_id,
-                "analysis_data": analysis_data,
-                "created_at": datetime.now(timezone.utc).isoformat()
-            }
-            result = self.client.table("task_analysis").insert(data).execute()
-            return result.data[0]
-        except Exception as e:
-            logger.error(f"Error storing task analysis: {str(e)}")
-            raise
+    def close_connection(self):
+        """
+        Close the database connection
+        """
+        self.cursor.close()
+        self.conn.close()
 
-    async def update_employee_metrics(self, 
-                                    employee_id: str, 
-                                    metrics: Dict[str, Any]) -> Dict[str, Any]:
-        """Update employee performance metrics"""
+    async def store_task_analysis(self, employee_id, analysis_data):
         try:
-            result = self.client.table("employees")\
-                .update(metrics)\
-                .eq("id", employee_id)\
-                .execute()
-            return result.data[0]
+            query = """
+                INSERT INTO task_analysis (employee_id, analysis_data, created_at)
+                VALUES (%s, %s, %s)
+                RETURNING id;
+            """
+            self.cursor.execute(query, (employee_id, analysis_data, datetime.utcnow()))
+            self.conn.commit()
+            return self.cursor.fetchone()
         except Exception as e:
-            logger.error(f"Error updating employee metrics: {str(e)}")
-            raise
+            logger.error(f"Error storing task analysis: {e}")
+            return None
 
-    async def get_employee_performance_history(self, 
-                                             employee_id: str,
-                                             start_date: str,
-                                             end_date: str) -> List[Dict[str, Any]]:
-        """Retrieve employee's historical performance data"""
+    async def get_recent_interactions(self, employee_id):
         try:
-            result = self.client.table("daily_tasks")\
-                .select("*")\
-                .eq("employee_id", employee_id)\
-                .gte("task_date", start_date)\
-                .lte("task_date", end_date)\
-                .execute()
-            return result.data
+            query = """
+                SELECT * FROM message_logs
+                WHERE employee_id = %s
+                ORDER BY sent_at DESC
+                LIMIT 10;
+            """
+            self.cursor.execute(query, (employee_id,))
+            return self.cursor.fetchall()
         except Exception as e:
-            logger.error(f"Error retrieving performance history: {str(e)}")
-            raise
+            logger.error(f"Error fetching recent interactions: {e}")
+            return None
 
-    async def store_ai_feedback(self,
-                              employee_id: str,
-                              feedback_type: str,
-                              feedback_content: Dict[str, Any]) -> Dict[str, Any]:
-        """Store AI-generated feedback"""
+    async def log_message(self, employee_id, message_type, content, attempt_number=1):
         try:
-            data = {
-                "employee_id": employee_id,
-                "feedback_type": feedback_type,
-                "feedback_content": feedback_content,
-                "created_at": datetime.now(timezone.utc).isoformat()
-            }
-            result = self.client.table("ai_feedback").insert(data).execute()
-            return result.data[0]
+            query = """
+                INSERT INTO message_logs (employee_id, message_type, message_content, sent_at, attempt_number)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id;
+            """
+            self.cursor.execute(query, (employee_id, message_type, content, datetime.utcnow(), attempt_number))
+            self.conn.commit()
+            return self.cursor.fetchone()
         except Exception as e:
-            logger.error(f"Error storing AI feedback: {str(e)}")
-            raise
+            logger.error(f"Error logging message: {e}")
+            return None
 
-    async def get_recent_interactions(self,
-                                    employee_id: str,
-                                    limit: int = 10) -> List[Dict[str, Any]]:
-        """Retrieve recent AI-employee interactions"""
+    async def update_message_response(self, message_id, response):
         try:
-            result = self.client.table("message_logs")\
-                .select("*")\
-                .eq("employee_id", employee_id)\
-                .order("sent_at", desc=True)\
-                .limit(limit)\
-                .execute()
-            return result.data
+            query = """
+                UPDATE message_logs
+                SET response = %s, response_time = %s
+                WHERE id = %s
+                RETURNING id;
+            """
+            self.cursor.execute(query, (response, datetime.utcnow(), message_id))
+            self.conn.commit()
+            return self.cursor.fetchone()
         except Exception as e:
-            logger.error(f"Error retrieving recent interactions: {str(e)}")
-            raise
+            logger.error(f"Error updating message response: {e}")
+            return None
+
+    async def create_daily_task(self, employee_id, tasks_planned):
+        try:
+            query = """
+                INSERT INTO daily_tasks (employee_id, task_date, tasks_planned, status, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id;
+            """
+            self.cursor.execute(query, (employee_id, datetime.utcnow().date(), tasks_planned, "pending", datetime.utcnow()))
+            self.conn.commit()
+            return self.cursor.fetchone()
+        except Exception as e:
+            logger.error(f"Error creating daily task: {e}")
+            return None
+
+    async def get_employee_history(self, employee_id):
+        try:
+            query = """
+                SELECT * FROM daily_tasks
+                WHERE employee_id = %s
+                ORDER BY created_at DESC
+                LIMIT 10;
+            """
+            self.cursor.execute(query, (employee_id,))
+            return self.cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Error getting employee history: {e}")
+            return None
+
+    async def create_feedback_record(self, employee_id, feedback_content):
+        try:
+            query = """
+                INSERT INTO feedback_records (employee_id, feedback_content, created_at)
+                VALUES (%s, %s, %s)
+                RETURNING id;
+            """
+            self.cursor.execute(query, (employee_id, feedback_content, datetime.utcnow()))
+            self.conn.commit()
+            return self.cursor.fetchone()
+        except Exception as e:
+            logger.error(f"Error creating feedback record: {e}")
+            return None

@@ -1,10 +1,20 @@
-# database.py
 from dotenv import load_dotenv
 import os
 from supabase import create_client, Client
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+# Supabase Session Pooler connection URL
+SQLALCHEMY_DATABASE_URL = "postgresql://postgres.rdjxfeltmixaxbfqcngb:Ravindra%409205959919@aws-0-ap-south-1.pooler.supabase.com:5432/postgres?sslmode=require"
+
+# Create the engine
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
